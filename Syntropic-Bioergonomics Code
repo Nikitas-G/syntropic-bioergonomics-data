@@ -1,0 +1,249 @@
+import numpy as np
+import pandas as pd
+from scipy.signal import butter, filtfilt
+from scipy.spatial.distance import pdist, squareform
+
+class SyntropicBioergonomicsAnalyzer:
+    """
+    Nonlinear Dynamical Systems Analyzer for Musculoskeletal Workload Assessment.
+    Research Context:
+    Developed to analyze the LET (Lyapunov, Entropy, Topology) theoretical framework 
+    for biomimetic design and syntropic bioergonomics (DIKNIGA Lab, UNIWA). 
+    This tool evaluates human kinematic behavior, specifically focusing on how 
+    fatigue transforms movement from a stable, self-organized state into a chaotic one.
+
+    How it works (Simple Explanation):
+    Think of the human body like a well-rehearsed orchestra. When the workers are fresh, 
+    all the muscles play in perfect harmony (Syntropy). As they get tired, some muscles 
+    start playing out of tune, causing messy, unpredictable movements (Entropy). 
+    This code acts as the conductor's computer, measuring exactly when and how much 
+    the orchestra loses its rhythm.
+    """
+
+    def __init__(self, sampling_interval_ms=150):
+        # Calculate the actual sampling frequency (fs).
+        # SIMPLE EXPLANATION: If the sensor takes a snapshot every 150 milliseconds, 
+        # it means it takes about 6.67 snapshots per second.
+        self.fs = 1000.0 / sampling_interval_ms 
+        
+        # Set the cutoff frequency for our data filter at 2.5 Hertz.
+        self.cutoff = 2.5        
+
+    def remove_high_frequency_noise(self, raw_signal):
+        """
+        ACADEMIC: Applies a 3rd-order digital Low-Pass Butterworth filter via zero-phase 
+        forward-backward filtering to remove high-frequency artifact noise.
+        
+        SIMPLE EXPLANATION: Imagine trying to look at a beautiful painting through a 
+        very dirty, dusty window. The "dust" is the tiny, irrelevant vibrations picked up 
+        by the sensors (like the natural shaking of the room or electrical static). 
+        This filter acts like a window cleaner. It wipes away the high-speed "dust" 
+        (frequencies above 2.5 Hz) so we can clearly see the true, smooth movements 
+        of the human body.
+        """
+        # The Nyquist limit is the absolute maximum frequency our system can "see", 
+        # which is exactly half of how fast we take snapshots.
+        nyquist_limit = 0.5 * self.fs
+        normalized_cutoff = self.cutoff / nyquist_limit
+        
+        # Create and apply the mathematical "window cleaner" (the Butterworth filter).
+        b_coeff, a_coeff = butter(3, normalized_cutoff, btype='low', analog=False)
+        return filtfilt(b_coeff, a_coeff, raw_signal)
+
+    def calculate_lyapunov_exponent(self, time_series, time_lag=4, embed_dim=3, trajectory_steps=10):
+        """
+        ACADEMIC: Computes the Largest Lyapunov Exponent (LyE) using the Rosenstein algorithm 
+        by reconstructing the phase space using time-delay embedding. It measures the 
+        exponential divergence of infinitesimally close trajectories over time.
+        
+        SIMPLE EXPLANATION: Imagine placing two paper boats side-by-side in a river. 
+        If the water is calm and flows smoothly (stability/syntropy), the boats will 
+        stay close to each other as they travel downstream. 
+        If the water is rough and full of unpredictable whirlpools (chaos/entropy), 
+        the boats will quickly drift very far apart. 
+        
+        In our case, the "boats" are the movements of the worker's neck. This function 
+        measures exactly how fast these movements drift apart. If the number is low, 
+        the worker is moving safely and smoothly. If the number gets high, the worker 
+        is fatigued and their movements have become unpredictable and chaotic.
+        """
+        try:
+            n_samples = len(time_series)
+            
+            # Reconstruct the "Phase Space".
+            # SIMPLE EXPLANATION: Instead of looking at movement as a flat, boring line 
+            # on a piece of paper, we fold the data into a 3D shape so we can see the 
+            # actual "geometry" of the fatigue.
+            n_vectors = n_samples - (embed_dim - 1) * time_lag
+            if n_vectors <= 0: 
+                return np.nan
+            
+            phase_space = np.zeros((n_vectors, embed_dim))
+            for i in range(n_vectors):
+                phase_space[i] = [time_series[i + j * time_lag] for j in range(embed_dim)]
+            
+            # Find how far apart every single point is from every other point.
+            distance_matrix = squareform(pdist(phase_space, metric='euclidean'))
+            np.fill_diagonal(distance_matrix, np.inf)
+            
+            # Theiler window: We ignore points that are too close in time, 
+            # so we don't accidentally measure the same "boat" twice.
+            theiler_window = time_lag
+            for i in range(n_vectors):
+                start = max(0, i - theiler_window)
+                end = min(n_vectors, i + theiler_window + 1)
+                distance_matrix[i, start:end] = np.inf
+                
+            # Find the closest neighboring point (the closest "boat").
+            nearest_neighbors = np.argmin(distance_matrix, axis=1)
+            divergence_list = []
+            
+            # A tiny safety number so our math doesn't crash if distance is exactly zero.
+            epsilon = 1e-6 
+            
+            # Step forward in time and see how far the "boats" have drifted.
+            for k in range(1, min(trajectory_steps + 1, n_vectors - 1)):
+                divergence_sum = 0.0
+                valid_counts = 0
+                for i in range(n_vectors - k):
+                    j = nearest_neighbors[i]
+                    if j < (n_vectors - k):
+                        # Measure distance after 'k' steps forward
+                        dist_forward = np.linalg.norm(phase_space[i + k] - phase_space[j + k])
+                        # Measure initial distance
+                        dist_initial = distance_matrix[i, j]
+                        
+                        # Apply safety limits
+                        if dist_initial < epsilon: dist_initial = epsilon
+                        if dist_forward < epsilon: dist_forward = epsilon
+                            
+                        # The logarithm calculates the *rate* of drifting apart.
+                        divergence_sum += np.log(dist_forward / dist_initial)
+                        valid_counts += 1
+                        
+                if valid_counts > 0:
+                    divergence_list.append(divergence_sum / valid_counts)
+                    
+            if len(divergence_list) == 0: 
+                return np.nan
+            
+            # Return the final average rate of divergence.
+            return np.mean(divergence_list) * self.fs
+            
+        except Exception:
+            return np.nan
+
+    def calculate_shannon_entropy(self, time_series, bin_count=35):
+        """
+        ACADEMIC: Quantifies information-theoretic Shannon Entropy to assess the structural 
+        disorder and energy distribution within the kinematic data.
+        
+        SIMPLE EXPLANATION: Imagine a large box filled with Lego bricks. 
+        If all the bricks are sorted perfectly by color into neat little compartments, 
+        the box is highly organized. We call this "Low Entropy". 
+        If you take that box and dump all the bricks onto the floor in a massive, 
+        messy pile, the room becomes disorganized. We call this "High Entropy". 
+        
+        Here, we use this math to look at how the worker moves. If they move in a neat, 
+        repetitive, controlled pattern, the entropy is low. If they are tired, shaking, 
+        or moving unpredictably, the entropy goes high.
+        """
+        # Divide the movements into 35 "buckets" (bins) to see how scattered they are.
+        counts, _ = np.histogram(time_series, bins=bin_count, density=True)
+        
+        # Calculate the probability of the movement falling into each bucket.
+        probabilities = counts[counts > 0] / np.sum(counts[counts > 0])
+        
+        # Apply the Shannon Information formula.
+        return -np.sum(probabilities * np.log2(probabilities + 1e-10))
+
+
+# OPEN SCIENCE PIPELINE (DATA EXTRACTION & ANALYSIS)
+
+if __name__ == "__main__":
+    # Initialize our mathematical analyzer engine
+    analyzer = SyntropicBioergonomicsAnalyzer(sampling_interval_ms=150)
+    
+    # ----------------------------------------------------------------------
+    # ACADEMIC CLOUD REPOSITORY (GitHub Raw URLs)
+    # We point the script directly to the public GitHub repository.
+    # The '%20' is computer language for a "space" character in the file name.
+    # -----------------------------------------------------------------------
+    github_datasets = {
+        "Phase 1: Baseline (Rested)":  "https://raw.githubusercontent.com/Nikitas-G/syntropic-bioergonomics-data/main/Test2%20set1.csv",
+        "Phase 2: Fatigue (Tired)":    "https://raw.githubusercontent.com/Nikitas-G/syntropic-bioergonomics-data/main/Test2%20set2.csv",
+        "Phase 3: Recovery (Resting)": "https://raw.githubusercontent.com/Nikitas-G/syntropic-bioergonomics-data/main/Test2%20set3.csv"
+    }
+
+    # Algorithm configuration parameters
+    OPTIMAL_TIME_DELAY = 4    
+    OPTIMAL_DIMENSIONS = 3      
+    ENTROPY_BUCKETS = 35  
+
+    print("\n" + "="*70)
+    print(" STARTING CLOUD-BASED SYNTROPIC BIOERGONOMICS ANALYSIS")
+    print("="*70 + "\n")
+    print("Connecting to the public GitHub repository to fetch raw kinematic data...")
+
+    for phase_name, data_url in github_datasets.items():
+        try:
+            print(f"\n>>> DOWNLOADING DATA FOR: {phase_name}")
+            
+            # Read the CSV file directly from the internet using pandas.
+            # We specify that the data is separated by semicolons (;) and use 'latin1' 
+            # encoding to protect the degree symbol [°] from crashing the reader.
+            raw_data = pd.read_csv(data_url, sep=';', encoding='latin1')
+            
+            # Isolate the specific columns we care about. 
+            # We use numbers instead of names (3 is the 4th column, 4 is the 5th column) 
+            # to avoid any spelling or symbol errors.
+            roll_angles_raw = pd.to_numeric(raw_data.iloc[:, 3], errors='coerce').dropna().values
+            pitch_angles_raw = pd.to_numeric(raw_data.iloc[:, 4], errors='coerce').dropna().values
+
+            if len(pitch_angles_raw) == 0:
+                print("    [ERROR] No numerical data found in this cloud file.")
+                continue
+
+            # --- THE DITHERING PROCESS ---
+            # SIMPLE EXPLANATION: If a sensor gets stuck and sends the exact same number 
+            # 100 times in a row, the complex math formulas try to divide by zero and crash.
+            # We fix this by adding a microscopic, invisible "breeze" (random noise) to the 
+            # numbers. It is so small (0.00001) that it doesn't change the actual human movement, 
+            # but it keeps the math flowing perfectly smoothly.
+            np.random.seed(42)
+            roll_angles = roll_angles_raw + np.random.normal(0, 1e-5, size=roll_angles_raw.shape)
+            pitch_angles = pitch_angles_raw + np.random.normal(0, 1e-5, size=pitch_angles_raw.shape)
+
+            print(f"    [SUCCESS] Downloaded {len(pitch_angles)} valid kinematic snapshots.")
+
+            # STEP 1: Clean the windows (Filter the data)
+            clean_roll = analyzer.remove_high_frequency_noise(roll_angles)
+            clean_pitch = analyzer.remove_high_frequency_noise(pitch_angles)
+            
+            # STEP 2: Measure the chaotic divergence (Lyapunov Exponent)
+            lyapunov_pitch = analyzer.calculate_lyapunov_exponent(clean_pitch, OPTIMAL_TIME_DELAY, OPTIMAL_DIMENSIONS)
+            
+            # STEP 3: Measure the messiness of the movement (Shannon Entropy)
+            entropy_pitch = analyzer.calculate_shannon_entropy(clean_pitch, bin_count=ENTROPY_BUCKETS)
+            entropy_roll = analyzer.calculate_shannon_entropy(clean_roll, bin_count=ENTROPY_BUCKETS)
+            
+            # STEP 4: Final Academic Decision
+            # If the Lyapunov exponent is below a certain threshold (0.08), the system is healthy.
+            if lyapunov_pitch <= 0.08:
+                system_health = "SYNTROPY (Stable, healthy, and organized movement)"
+            else:
+                system_health = "ENTROPY (Chaotic, fatigued, and disorganized movement)"
+            
+            # Print the final report card for this phase.
+            print(f"    - Trajectory Divergence (Lyapunov Pitch):  {lyapunov_pitch:.4f}")
+            print(f"    - Movement Disorder (Entropy Pitch):       {entropy_pitch:.4f}")
+            print(f"    - Lateral Instability (Entropy Roll):      {entropy_roll:.4f}")
+            print(f"    - FINAL BIOMECHANICAL STATE:               {system_health}")
+            print("-" * 70)
+            
+        except Exception as e:
+            print(f"    [SYSTEM ERROR] Failed to process cloud data: {e}")
+
+    print("\n" + "="*70)
+    print(" LET FRAMEWORK ANALYSIS COMPLETE")
+    print("="*70 + "\n")
