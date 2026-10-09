@@ -1,6 +1,6 @@
 # syntropic-bioergonomics-data
 
-[![DOI](https://doi.org/10.3390/app16199471.svg)](https://doi.org/10.3390/app16199471)
+[![DOI: 10.3390/app16199471](https://img.shields.io/badge/DOI-10.3390%2Fapp16199471-107C41?logo=doi&logoColor=white)](https://doi.org/10.3390/app16199471)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22913989.svg)](https://doi.org/10.5281/zenodo.22913989)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
